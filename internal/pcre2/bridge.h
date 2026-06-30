@@ -52,27 +52,29 @@ void bridge_set_free(
     RegexSet *set);
 
 /*
- * Match the subject against every pattern of every group in a
- * single call. The subject is normalized once and the whole loop
- * runs inside C, so no matter how many groups or patterns there
- * are, the Go side only pays for one cgo crossing.
+ * Match the subject against the patterns whose flattened global index lies in
+ * [code_start, code_start + code_count). Passing (0, bridge_set_total_codes())
+ * matches the whole set; smaller ranges let the caller split the work across
+ * goroutines/threads. The subject is normalized once per call and the loop runs
+ * inside C, so each cgo crossing covers a whole range.
  *
- * Each SetMatchResult carries the index of the group it matched.
- * This function does not mutate the set and is safe to call from
- * multiple threads concurrently.
+ * Each SetMatchResult carries the index of the group it matched. This function
+ * does not mutate the set and is safe to call concurrently (each call uses its
+ * own match data and normalized copy).
  *
- * results is allocated by the caller; its capacity must be >=
- * bridge_set_total_codes().
+ * results is allocated by the caller; its capacity must be >= code_count.
  * Returns the number of matches, or -1 on error.
  */
-int bridge_set_find_all(
+int bridge_set_find_range(
     RegexSet *set,
     const char *subject,
+    size_t code_start,
+    size_t code_count,
     SetMatchResult *results,
     size_t capacity);
 
 /*
- * Like bridge_set_find_all but stops at the first match. The subject
+ * Like bridge_set_find_range but stops at the first match. The subject
  * is normalized once and matching short-circuits as soon as any
  * pattern in any group hits, which is the common case for a pass/fail
  * content check.

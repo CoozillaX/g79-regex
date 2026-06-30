@@ -199,16 +199,18 @@ void bridge_set_free(
     free(set);
 }
 
-int bridge_set_find_all(
+int bridge_set_find_range(
     RegexSet *set,
     const char *subject,
+    size_t code_start,
+    size_t code_count,
     SetMatchResult *results,
     size_t capacity)
 {
     if (!set || !subject || !results)
         return -1;
 
-    /* Normalize the subject once; shared by every group. */
+    /* Normalize the subject once; shared by every pattern in this range. */
     NormalizeResult norm =
         normalize_subject(subject);
 
@@ -225,10 +227,12 @@ int bridge_set_find_all(
         return -1;
     }
 
+    size_t code_end = code_start + code_count;
+    size_t globalIdx = 0;
     size_t found = 0;
 
     for (size_t g = 0;
-         g < set->count && found < capacity;
+         g < set->count && globalIdx < code_end && found < capacity;
          g++) {
 
         RegexLibrary *lib = set->groups[g];
@@ -236,9 +240,18 @@ int bridge_set_find_all(
         if (!lib)
             continue;
 
+        /* Skip whole groups that fall entirely before the range. */
+        if (globalIdx + lib->count <= code_start) {
+            globalIdx += lib->count;
+            continue;
+        }
+
         for (size_t i = 0;
-             i < lib->count && found < capacity;
-             i++) {
+             i < lib->count && globalIdx < code_end && found < capacity;
+             i++, globalIdx++) {
+
+            if (globalIdx < code_start)
+                continue;
 
             RegexCode *rc = lib->codes[i];
 

@@ -14,6 +14,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"sync"
 	"unsafe"
@@ -21,6 +22,11 @@ import (
 	// Compiles and links the vendored PCRE2 C library; no Go API is used.
 	_ "github.com/CoozillaX/g79-regex/internal/pcre2/cpcre2"
 )
+
+// parallelThreshold is the minimum total pattern count at which FindAll splits
+// the work across goroutines. Below it the fan-out overhead (extra normalize
+// passes + goroutine scheduling) outweighs the gain, so we match serially.
+const parallelThreshold = 256
 
 // GroupBlob is one group to load: a name plus its serialized PCRE2 data.
 type GroupBlob struct {
@@ -133,43 +139,119 @@ func (s *Set) Groups() []string {
 	return s.names
 }
 
-// FindAll matches the subject against every pattern of every group in a single
-// cgo call. Each result carries the name of the group it matched. Safe for
-// concurrent use.
+// FindAll matches the subject against every pattern of every group. Each result
+// carries the name of the group it matched, and results are returned in pattern
+// order (group, then index). Safe for concurrent use.
+//
+// For large rule sets the work is split across goroutines, each matching a slice
+// of the flattened pattern range via its own cgo call; small sets match serially
+// to avoid fan-out overhead.
 func (s *Set) FindAll(subject string) []*GroupMatch {
+	return s.findAll(subject, true)
+}
+
+// findAll implements FindAll. When parallel is false it always uses the serial
+// path, which lets benchmarks compare the two without the threshold heuristic.
+func (s *Set) findAll(subject string, parallel bool) []*GroupMatch {
 
 	if s.ptr == nil {
 		return nil
 	}
 
-	capacity := int(
+	total := int(
 		C.bridge_set_total_codes(s.ptr),
 	)
 
-	if capacity == 0 {
+	if total == 0 {
 		return nil
 	}
 
+	// One shared, read-only C copy of the subject for every worker; the C side
+	// only reads it (each call makes its own normalized copy internally).
 	cs := C.CString(subject)
 	defer C.free(
 		unsafe.Pointer(cs),
 	)
 
-	bufp := setBufPool.Get().(*[]C.SetMatchResult)
+	workers := runtime.GOMAXPROCS(0)
+	if !parallel || workers <= 1 || total < parallelThreshold {
+		return s.findRange(cs, subject, 0, total, true)
+	}
 
-	buf := *bufp
-	if cap(buf) < capacity {
-		buf = make([]C.SetMatchResult, capacity)
+	if workers > total {
+		workers = total
+	}
+
+	chunk := (total + workers - 1) / workers
+
+	segments := make([][]*GroupMatch, workers)
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+
+		start := w * chunk
+		if start >= total {
+			break
+		}
+
+		count := chunk
+		if start+count > total {
+			count = total - start
+		}
+
+		wg.Add(1)
+		go func(idx, start, count int) {
+			defer wg.Done()
+			segments[idx] = s.findRange(cs, subject, start, count, false)
+		}(w, start, count)
+	}
+
+	wg.Wait()
+
+	// Concatenate in worker order, which is ascending pattern-index order, so
+	// the merged result matches the serial ordering.
+	var out []*GroupMatch
+	for _, seg := range segments {
+		out = append(out, seg...)
+	}
+
+	return out
+}
+
+// findRange matches the flattened pattern range [start, start+count) with a
+// single cgo call and converts the hits to GroupMatch. cs is a shared read-only
+// C copy of subject; subject is the Go string used to slice matched text. When
+// pooled is true a pooled result buffer is reused (serial path); concurrent
+// workers pass false and use a private buffer.
+func (s *Set) findRange(cs *C.char, subject string, start, count int, pooled bool) []*GroupMatch {
+
+	if count <= 0 {
+		return nil
+	}
+
+	var buf []C.SetMatchResult
+	var bufp *[]C.SetMatchResult
+
+	if pooled {
+		bufp = setBufPool.Get().(*[]C.SetMatchResult)
+		buf = *bufp
+		if cap(buf) < count {
+			buf = make([]C.SetMatchResult, count)
+		} else {
+			buf = buf[:count]
+		}
 	} else {
-		buf = buf[:capacity]
+		buf = make([]C.SetMatchResult, count)
 	}
 
 	cnt := int(
-		C.bridge_set_find_all(
+		C.bridge_set_find_range(
 			s.ptr,
 			cs,
+			C.size_t(start),
+			C.size_t(count),
 			&buf[0],
-			C.size_t(capacity),
+			C.size_t(count),
 		),
 	)
 
@@ -183,8 +265,8 @@ func (s *Set) FindAll(subject string) []*GroupMatch {
 
 			r := buf[i]
 
-			start := int(r.start)
-			end := int(r.end)
+			st := int(r.start)
+			en := int(r.end)
 
 			name := ""
 			if gi := int(r.group); gi >= 0 && gi < len(s.names) {
@@ -194,15 +276,17 @@ func (s *Set) FindAll(subject string) []*GroupMatch {
 			out = append(out, &GroupMatch{
 				Group: name,
 				Index: int(r.index),
-				Start: start,
-				End:   end,
-				Text:  subject[start:end],
+				Start: st,
+				End:   en,
+				Text:  subject[st:en],
 			})
 		}
 	}
 
-	*bufp = buf
-	setBufPool.Put(bufp)
+	if pooled {
+		*bufp = buf
+		setBufPool.Put(bufp)
+	}
 
 	return out
 }
