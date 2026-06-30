@@ -13,12 +13,35 @@ const (
 	// sampleFile is the text to match, read from a file in this directory.
 	sampleFile = "test_data.txt"
 	// maxTextLen caps how much matched text we print so long hits stay readable.
-	maxTextLen = 30
+	maxTextLen = 10
+	// nicknameGroup is the group name reserved for nickname-only review.
+	nicknameGroup = "nickname"
 )
 
-// TestReviewFromCloud fetches the live rule bundle and exercises both review
-// paths against the sample text. It is network-backed, so it is skipped under
-// -short.
+// mode describes one review path and how to validate its results: the general
+// path must never hit the nickname group, and the nickname path must only hit
+// it.
+type mode struct {
+	name     string
+	nickname bool
+}
+
+var modes = []mode{
+	{name: "General", nickname: false},
+	{name: "Nickname", nickname: true},
+}
+
+// validGroup reports whether a matched group is allowed for this mode.
+func (m mode) validGroup(group string) bool {
+	if m.nickname {
+		return group == nicknameGroup
+	}
+	return group != nicknameGroup
+}
+
+// TestReviewFromCloud fetches the live rule bundle and exercises both the
+// general and nickname review paths against the sample text, in both full-scan
+// and first-only modes. It is network-backed, so it is skipped under -short.
 func TestReviewFromCloud(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping cloud-backed test in -short mode")
@@ -28,20 +51,40 @@ func TestReviewFromCloud(t *testing.T) {
 	r := newReviewer(t)
 	defer r.Close()
 
-	t.Run("All", func(t *testing.T) {
-		reviewAll(t, r, content)
-	})
+	for _, m := range modes {
+		t.Run(m.name+"/All", func(t *testing.T) {
+			if hits := reviewWord(t, r, content, m, false); len(hits) == 0 {
+				t.Fatalf("%s: expected matches, got none", m.name)
+			}
+		})
 
-	t.Run("FirstOnly", func(t *testing.T) {
-		start := time.Now()
-		hits := r.ReviewWord(content, &review.Options{FirstOnly: true})
-		t.Logf("first-match scan took %v", time.Since(start))
-		if len(hits) == 0 {
-			t.Fatal("expected at least one match, got none")
+		t.Run(m.name+"/FirstOnly", func(t *testing.T) {
+			if hits := reviewWord(t, r, content, m, true); len(hits) > 1 {
+				t.Fatalf("%s: FirstOnly returned %d matches, want at most 1", m.name, len(hits))
+			}
+		})
+	}
+}
+
+// reviewWord runs one ReviewWord call, asserts every hit belongs to an allowed
+// group, logs the (truncated) results, and returns the matches.
+func reviewWord(t *testing.T, r *review.Reviewer, content string, m mode, firstOnly bool) []*review.GroupMatch {
+	t.Helper()
+
+	opts := &review.Options{Nickname: m.nickname, FirstOnly: firstOnly}
+
+	start := time.Now()
+	hits := r.ReviewWord(content, opts)
+	t.Logf("[%s firstOnly=%v] scan took %v; matches=%d", m.name, firstOnly, time.Since(start), len(hits))
+
+	for _, h := range hits {
+		if !m.validGroup(h.Group) {
+			t.Fatalf("%s: unexpected group %q", m.name, h.Group)
 		}
-		hit := hits[0]
-		t.Logf("first hit: [%s, %d] %s (%d - %d)", hit.Group, hit.Index, truncate(hit.Text, maxTextLen), hit.Start, hit.End)
-	})
+		t.Logf("  - [%s, %d] %s (%d - %d)", h.Group, h.Index, truncate(h.Text, maxTextLen), h.Start, h.End)
+	}
+
+	return hits
 }
 
 // loadSample reads the local sample text used as the review subject.
@@ -66,20 +109,6 @@ func newReviewer(t *testing.T) *review.Reviewer {
 	}
 	t.Logf("init (download + decrypt + load) took %v", time.Since(start))
 	return r
-}
-
-// reviewAll runs a full scan, logs timing plus the truncated matches, and
-// returns the match count.
-func reviewAll(t *testing.T, r *review.Reviewer, content string) int {
-	t.Helper()
-
-	start := time.Now()
-	matches := r.ReviewWord(content, nil)
-	t.Logf("scan took %v; matches=%d", time.Since(start), len(matches))
-	for _, m := range matches {
-		t.Logf("  - [%s, %d] %s (%d - %d)", m.Group, m.Index, truncate(m.Text, maxTextLen), m.Start, m.End)
-	}
-	return len(matches)
 }
 
 // truncate shortens s to at most n runes, appending an ellipsis when cut.

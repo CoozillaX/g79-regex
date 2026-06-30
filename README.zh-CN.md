@@ -38,7 +38,7 @@ func main() {
 
 	text := "待检测文本"
 
-	// 默认返回全部命中；无命中时返回 nil。
+	// 默认：除 nickname 外的全部规则组，subject = level/channel/content
 	for _, m := range r.ReviewWord(text, nil) {
 		fmt.Printf(
 			"matched: [%s, %d] %s (%d - %d)\n",
@@ -46,7 +46,15 @@ func main() {
 		)
 	}
 
-	// 命中第一条即停止，仍返回切片（最多一个元素）。
+	// Nickname: true 时仅用 nickname 规则组，直接匹配原文（无 level/channel 前缀）
+	for _, m := range r.ReviewWord(text, &review.Options{Nickname: true}) {
+		fmt.Printf(
+			"nickname: [%s, %d] %s (%d - %d)\n",
+			m.Group, m.Index, m.Text, m.Start, m.End,
+		)
+	}
+
+	// 命中第一条即停止
 	if hits := r.ReviewWord(text, &review.Options{FirstOnly: true}); len(hits) > 0 {
 		hit := hits[0]
 		fmt.Printf(
@@ -62,7 +70,7 @@ func main() {
 | 方法 | 说明 |
 | --- | --- |
 | `review.New(ctx)` | 从云端拉取、解密并加载规则，返回就绪的 `*Reviewer`。 |
-| `(*Reviewer) ReviewWord(content, opts)` | 检测文本。`opts` 可为 `nil`（默认全部匹配）；无命中返回 `nil`。 |
+| `(*Reviewer) ReviewWord(content, opts)` | 检测文本；`opts` 可为 `nil`（默认通用审核 + 全部命中）；无命中返回 `nil`。 |
 | `(*Reviewer) Reload(ctx)` | 重新拉取并原子替换规则集；规则未变化时返回 `false`。 |
 | `(*Reviewer) Close()` | 释放底层资源。 |
 
@@ -72,8 +80,9 @@ func main() {
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `Level` | `string` | `"0"` | 表达式分级，少部分规则会按此字段过滤。 |
-| `Channel` | `string` | `"item_comment"` | 文本来源场景，不同场景下命中的规则不同。 |
+| `Level` | `string` | `"0"` | 表达式分级，少部分规则会按此字段过滤。`Nickname` 为 `true` 时忽略。 |
+| `Channel` | `string` | `"item_comment"` | 文本来源场景，不同场景下命中的规则不同。`Nickname` 为 `true` 时忽略。 |
+| `Nickname` | `bool` | `false` | 为 `true` 时仅用 nickname 规则组，直接匹配原文（无 level/channel 前缀）。 |
 | `FirstOnly` | `bool` | `false` | 为 `true` 时命中第一条即停止，仍返回切片。 |
 
 #### `Channel` 常用取值
