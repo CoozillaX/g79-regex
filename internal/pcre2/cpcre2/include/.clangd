@@ -1,0 +1,15 @@
+# Headers (pcre2.h, config.h, …) are browsable with normal flags.
+# The .c files here are include-only (pulled in by pcre2_jit_compile.c and
+# pcre2_tables.c); parsing them as standalone TUs triggers upstream #error guards.
+CompileFlags:
+  Add:
+    - -I.
+    - -DHAVE_CONFIG_H
+    - -DPCRE2_CODE_UNIT_WIDTH=8
+    - -DPCRE2_STATIC
+
+---
+If:
+  PathMatch: .*\.c
+Diagnostics:
+  Suppress: '*'

@@ -1,0 +1,4 @@
+# sljit sources are #included from sljitLir.c with arch-specific defines.
+# They are not standalone translation units; suppress IDE noise when browsing.
+Diagnostics:
+  Suppress: '*'
