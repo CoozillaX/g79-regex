@@ -12,58 +12,23 @@ typedef struct RegexSet RegexSet;
 
 typedef struct
 {
-    int index;
-    int start;
-    int end;
-} MatchResult;
-
-typedef struct
-{
     int group;
     int index;
     int start;
     int end;
 } SetMatchResult;
 
-/* Deserialize */
-
+/*
+ * Deserialize a serialized PCRE2 bundle into a library (one group). The library
+ * is owned by C; add it to a set with bridge_set_add (then freed via
+ * bridge_set_free) or release it directly with bridge_library_free.
+ */
 RegexLibrary *bridge_deserialize(
     const unsigned char *blob,
     size_t len);
 
-/* Library */
-
-size_t bridge_library_count(
-    RegexLibrary *lib);
-
-RegexCode *bridge_library_get(
-    RegexLibrary *lib,
-    size_t index);
-
 void bridge_library_free(
     RegexLibrary *lib);
-
-/* Matching */
-
-int bridge_find(
-    RegexCode *code,
-    const char *subject,
-    MatchResult *result);
-
-/*
- * Match the subject against every pattern in the library in a
- * single call. The subject is normalized once and the whole loop
- * runs inside C, so the Go side only pays for one cgo crossing.
- *
- * results is allocated by the caller; its capacity must be >= the
- * number of patterns in the library.
- * Returns the number of matches, or -1 on error.
- */
-int bridge_find_all(
-    RegexLibrary *lib,
-    const char *subject,
-    MatchResult *results,
-    size_t capacity);
 
 /* Set: several pattern groups (one library per group) held together. */
 
