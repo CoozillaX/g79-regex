@@ -1,9 +1,15 @@
-// Package review provides a content-moderation reviewer backed by the NetEase
-// PCRE2 regex bundle. A Reviewer downloads and parses the bundle on creation
-// and exposes detailed match information that can be hot-reloaded at runtime.
+// Package review provides a content-moderation API backed by the NetEase PCRE2
+// rule bundle.
 //
-// ReviewWord covers both general text review (all groups except nickname, with a
-// level/channel/content subject) and nickname-only review (opts.Nickname).
+// A Reviewer downloads, decrypts, and loads the bundled rules on creation, then
+// exposes two review modes through ReviewWord:
+//
+//   - general review: all groups except nickname, matched against an internal
+//     level/channel/content subject
+//   - nickname review: the nickname group only, matched against the raw input
+//
+// Match positions returned to callers are always relative to the original input
+// content passed to ReviewWord.
 package review
 
 import (
@@ -22,6 +28,11 @@ const (
 )
 
 // GroupMatch is one rule hit returned by ReviewWord.
+//
+// Group is the matched rule group name, such as "nickname" or "intercept".
+// Index is the matched pattern index within that group. Start and End are byte
+// offsets in the original content passed to ReviewWord, and Text is the matched
+// substring sliced from that original content.
 type GroupMatch = pcre2.GroupMatch
 
 // Reviewer matches text against the loaded regex groups. It is safe for
@@ -34,8 +45,11 @@ type Reviewer struct {
 	url         string     // bundle URL of the currently loaded set, to skip no-op reloads
 }
 
-// New downloads, decrypts, and parses the current regex bundle and returns a
-// ready Reviewer. The caller owns the returned Reviewer and must Close it.
+// New downloads, decrypts, and loads the current rule bundle, returning a ready
+// Reviewer.
+//
+// The returned Reviewer is safe for concurrent use. The caller must call Close
+// when it is no longer needed.
 func New(ctx context.Context) (*Reviewer, error) {
 	groups, url, err := source.Fetch(ctx)
 	if err != nil {
@@ -50,9 +64,12 @@ func New(ctx context.Context) (*Reviewer, error) {
 	return &Reviewer{set: set, nicknameSet: nicknameSet, url: url}, nil
 }
 
-// Reload re-fetches the bundle and atomically swaps in the new rule sets. When
-// the bundle URL is unchanged since the last load it is a no-op returning
-// false. In-flight checks keep using the previous sets until they complete.
+// Reload re-fetches the current bundle and atomically swaps in the new rule
+// sets.
+//
+// It returns changed=false when the resolved bundle URL has not changed since
+// the last successful load. In-flight ReviewWord calls keep using the previous
+// sets until they complete.
 func (r *Reviewer) Reload(ctx context.Context) (changed bool, err error) {
 	url, err := source.ResolveURL(ctx)
 	if err != nil {
@@ -98,9 +115,11 @@ func (r *Reviewer) Reload(ctx context.Context) (changed bool, err error) {
 	return true, nil
 }
 
-// Options tunes a ReviewWord call. A nil *Options is valid and uses the
-// defaults: general review, level "0", channel "item_comment", and a full scan
-// that returns every match.
+// Options controls how ReviewWord interprets the input and how much work it
+// performs.
+//
+// A nil *Options is valid and uses the defaults: general review, level "0",
+// channel "item_comment", and a full scan that returns every match.
 type Options struct {
 	// Level is the expression level; a few rules are gated on it. Defaults to
 	// "0". Ignored when Nickname is true.
@@ -117,12 +136,19 @@ type Options struct {
 	FirstOnly bool
 }
 
-// ReviewWord checks content against the loaded rules and returns the matches,
-// or nil when nothing matches. opts may be nil to use the defaults.
+// ReviewWord checks content against the loaded rules and returns the matched
+// rules, or nil when nothing matches.
 //
-// By default it uses the general rule set (every group except nickname) with a
-// level/channel/content subject. With opts.Nickname it instead uses the
-// nickname-only rule set and matches the raw content directly.
+// By default it uses the general rule set (every group except nickname). In
+// that mode the underlying engine matches against an internal
+// "level/channel/content" subject, but the returned Start, End, and Text fields
+// are remapped back to the original content argument.
+//
+// When opts.Nickname is true, ReviewWord uses the nickname-only rule set and
+// matches the raw content directly.
+//
+// When opts.FirstOnly is true, ReviewWord stops at the first hit and still
+// returns a slice of length 1 for consistency.
 func (r *Reviewer) ReviewWord(content string, opts *Options) []*GroupMatch {
 	var o Options
 	if opts != nil {
@@ -141,7 +167,9 @@ func (r *Reviewer) ReviewWord(content string, opts *Options) []*GroupMatch {
 	)
 }
 
-// Close releases the underlying rule sets.
+// Close releases the rule sets held by the Reviewer.
+//
+// After Close, the Reviewer should not be used again.
 func (r *Reviewer) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
