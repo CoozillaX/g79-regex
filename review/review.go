@@ -133,7 +133,12 @@ func (r *Reviewer) ReviewWord(content string, opts *Options) []*GroupMatch {
 		return r.match(r.nicknameSet, content, o.FirstOnly)
 	}
 
-	return r.match(r.set, buildSubject(o.Level, o.Channel, content), o.FirstOnly)
+	subject, contentOffset := buildSubject(o.Level, o.Channel, content)
+	return remapMatches(
+		r.match(r.set, subject, o.FirstOnly),
+		content,
+		contentOffset,
+	)
 }
 
 // Close releases the underlying rule sets.
@@ -207,7 +212,7 @@ func loadSets(groups map[string][]byte) (set *pcre2.Set, nicknameSet *pcre2.Set,
 	return set, nicknameSet, nil
 }
 
-func buildSubject(level, channel, content string) string {
+func buildSubject(level, channel, content string) (subject string, contentOffset int) {
 	if level == "" {
 		level = defaultLevel
 	}
@@ -215,5 +220,43 @@ func buildSubject(level, channel, content string) string {
 		channel = defaultChannel
 	}
 
-	return fmt.Sprintf("level=%s_channel=%s_content=%s", level, channel, content)
+	prefix := fmt.Sprintf("level=%s_channel=%s_content=", level, channel)
+	return prefix + content, len(prefix)
+}
+
+func remapMatches(matches []*GroupMatch, content string, contentOffset int) []*GroupMatch {
+	if len(matches) == 0 || contentOffset == 0 {
+		return matches
+	}
+
+	out := make([]*GroupMatch, 0, len(matches))
+	for _, m := range matches {
+		if m == nil {
+			continue
+		}
+
+		start := m.Start - contentOffset
+		end := m.End - contentOffset
+		if end <= 0 || start >= len(content) {
+			continue
+		}
+		if start < 0 {
+			start = 0
+		}
+		if end > len(content) {
+			end = len(content)
+		}
+		if end < start {
+			end = start
+		}
+
+		out = append(out, &GroupMatch{
+			Group: m.Group,
+			Index: m.Index,
+			Start: start,
+			End:   end,
+			Text:  content[start:end],
+		})
+	}
+	return out
 }

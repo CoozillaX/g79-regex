@@ -111,11 +111,18 @@ func newReviewer(t *testing.T) *review.Reviewer {
 	return r
 }
 
-// truncate shortens s to at most n runes, appending an ellipsis when cut.
+// truncate keeps the start and end of s, inserting an ellipsis in the middle
+// when the string is longer than n runes.
 func truncate(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
 		return s
 	}
-	return string(r[:n]) + "..."
+	if n <= 3 {
+		return string(r[:n]) + "..."
+	}
+
+	head := (n + 1) / 2
+	tail := n - head
+	return string(r[:head]) + "..." + string(r[len(r)-tail:])
 }
